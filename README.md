@@ -10,3 +10,9 @@ At the core of Mortise's conflict-free sync architecture is the **Hybrid Logical
 1. **Preserving True Causality:** Unlike a standard `Date.now()` timestamp, HLCs guarantee event causality. If a local mutation relies on data received from another client, the `receive` action bumps the local logical clock forward. This guarantees the local reaction strictly happens "after" the event that caused it, preserving sequential integrity across the network.
 2. **Offline Resilience:** HLCs enable Mortise to track state perfectly during offline gaps. When clients eventually reconnect and exchange data streams, their offline timelines effortlessly zip together. The deterministic structure (incorporating physical time, an event counter, and a tie-breaking `nodeId`) means any peer can precisely order events identically without a central server.
 3. **Painless Serialization:** Mortise encodes these clocks identically to strict ISO lexicographic patterns (e.g. `2026-04-08T12:00:00.000Z-0000-node123`). This means that your underlying storage layer—whether it’s IndexedDB, SQLite, or a cloud backend—can trivially sort state transitions organically as strings.
+
+## The Body: WASM Database
+
+Mortise uses a **PGlite** instance running in a dedicated Web Worker thread. This leverages WebAssembly (WASM) to run a lightweight, actual PostgreSQL engine right in the browser. 
+
+By offloading all database initialization, SQL parsing, and data manipulation to a background worker string, the main thread remains entirely unblocked. The application's UI stays responsive down to the frame while relying on robust local-first persistence capabilities.
