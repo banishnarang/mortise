@@ -34,7 +34,13 @@ export function subscribe(sql: string, listener: Listener) {
 worker.onmessage = (event: MessageEvent) => {
   const { type, table, id, results, error } = event.data;
   
-  if (type === 'TAB_CHANGED') {
+  if (type === 'LOCAL_TAB_CHANGED' || type === 'REMOTE_TAB_CHANGED') {
+    if (type === 'LOCAL_TAB_CHANGED') {
+      // Logic specific to a local update could go here
+    } else {
+      // Logic specific to a remote update could go here
+    }
+
     const tableListeners = listeners.get(table);
     if (tableListeners) {
       tableListeners.forEach(fn => fn());

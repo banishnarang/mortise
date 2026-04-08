@@ -15,7 +15,7 @@ async function testDatabase() {
     // 1. Create a table
     await query(`
       CREATE TABLE IF NOT EXISTS test_users (
-        id SERIAL PRIMARY KEY,
+        id TEXT PRIMARY KEY,
         name TEXT NOT NULL
       );
     `);
@@ -24,7 +24,8 @@ async function testDatabase() {
     await query(`DELETE FROM test_users`);
 
     // 2. Insert a record
-    await query(`INSERT INTO test_users (name) VALUES ($1)`, ['Alice']);
+    const idAlice = crypto.randomUUID();
+    await query(`INSERT INTO test_users (id, name) VALUES ($1, $2)`, [idAlice, 'Alice']);
 
     let reactivityCount = 0;
     // 3. Setup Reactivity test
@@ -50,8 +51,9 @@ async function testDatabase() {
 
     // 5. Trigger Reactivity in background
     setTimeout(async () => {
-      await query(`INSERT INTO test_users (name) VALUES ($1)`, ['Charlie']);
-      await query(`UPDATE test_users SET name = 'Alice (Updated)' WHERE name = 'Alice'`);
+      const idCharlie = crypto.randomUUID();
+      await query(`INSERT INTO test_users (id, name) VALUES ($1, $2)`, [idCharlie, 'Charlie']);
+      await query(`UPDATE test_users SET name = 'Alice (Updated)' WHERE id = $1`, [idAlice]);
     }, 1000);
 
   } catch (error: any) {
