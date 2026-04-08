@@ -16,3 +16,7 @@ At the core of Mortise's conflict-free sync architecture is the **Hybrid Logical
 Mortise uses a **PGlite** instance running in a dedicated Web Worker thread. This leverages WebAssembly (WASM) to run a lightweight, actual PostgreSQL engine right in the browser. 
 
 By offloading all database initialization, SQL parsing, and data manipulation to a background worker string, the main thread remains entirely unblocked. The application's UI stays responsive down to the frame while relying on robust local-first persistence capabilities.
+
+## Framework-Agnostic Core
+
+Mortise uses a **Framework-Agnostic Core**. The database engine handles SQL parsing and change-notifications natively. React hooks are provided as a lightweight convenience layer, but the engine can be used with any framework (Vue, Svelte, Vanilla) via the `db.subscribe()` API.
