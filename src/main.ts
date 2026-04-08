@@ -1,5 +1,5 @@
 import './style.css'
-import { query } from './lib/mortise/db'
+import { query, subscribe } from './lib/mortise/db'
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div>
@@ -20,17 +20,40 @@ async function testDatabase() {
       );
     `);
     
+    // Clear the table so testing is consistent
+    await query(`DELETE FROM test_users`);
+
     // 2. Insert a record
     await query(`INSERT INTO test_users (name) VALUES ($1)`, ['Alice']);
-    await query(`INSERT INTO test_users (name) VALUES ($1)`, ['Bob']);
 
-    // 3. Query the records
+    let reactivityCount = 0;
+    // 3. Setup Reactivity test
+    subscribe(`SELECT * FROM test_users`, () => {
+       reactivityCount++;
+       query(`SELECT * FROM test_users`).then(r => {
+           console.log("Reactivity triggered! Current Data:", r.rows);
+           document.getElementById('reactivity-test')!.innerHTML = `
+             <h3 style="color: green;">Reactivity Test: Fired ${reactivityCount} times! 🎉</h3>
+             <pre>${JSON.stringify(r.rows, null, 2)}</pre>
+           `;
+       });
+    });
+
+    // 4. Query the records for initial render
     const result = await query(`SELECT * FROM test_users`);
     
     output.innerHTML = `
       <h3>Database Test Successful! 🎉</h3>
       <pre>${JSON.stringify(result.rows, null, 2)}</pre>
+      <div id="reactivity-test">Waiting for reactivity...</div>
     `;
+
+    // 5. Trigger Reactivity in background
+    setTimeout(async () => {
+      await query(`INSERT INTO test_users (name) VALUES ($1)`, ['Charlie']);
+      await query(`UPDATE test_users SET name = 'Alice (Updated)' WHERE name = 'Alice'`);
+    }, 1000);
+
   } catch (error: any) {
     output.innerHTML = `
       <h3 style="color: red;">Database Test Failed ❌</h3>

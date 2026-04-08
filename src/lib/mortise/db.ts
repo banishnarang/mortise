@@ -7,10 +7,41 @@ const worker = new DatabaseWorker();
 const pendingQueries = new Map<number, { resolve: (val: any) => void; reject: (err: any) => void }>();
 let queryIdCounter = 0;
 
+// Simple EventEmitter logic for table changes
+export type Listener = () => void;
+const listeners = new Map<string, Set<Listener>>();
+
+export function subscribe(sql: string, listener: Listener) {
+  const tableMatch = sql.match(/FROM\s+([a-zA-Z0-9_]+)/i);
+  const table = tableMatch ? tableMatch[1] : null;
+  
+  if (!table) return () => {};
+
+  if (!listeners.has(table)) {
+    listeners.set(table, new Set());
+  }
+  listeners.get(table)!.add(listener);
+
+  return () => {
+    const tableListeners = listeners.get(table);
+    if (tableListeners) {
+      tableListeners.delete(listener);
+    }
+  };
+}
+
 // Listen for messages from the Web Worker
 worker.onmessage = (event: MessageEvent) => {
-  const { id, results, error } = event.data;
+  const { type, table, id, results, error } = event.data;
   
+  if (type === 'TAB_CHANGED') {
+    const tableListeners = listeners.get(table);
+    if (tableListeners) {
+      tableListeners.forEach(fn => fn());
+    }
+    return;
+  }
+
   const pending = pendingQueries.get(id);
   if (pending) {
     if (error) {
