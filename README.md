@@ -20,3 +20,11 @@ By offloading all database initialization, SQL parsing, and data manipulation to
 ## Framework-Agnostic Core
 
 Mortise uses a **Framework-Agnostic Core**. The database engine handles SQL parsing and change-notifications natively. React hooks are provided as a lightweight convenience layer, but the engine can be used with any framework (Vue, Svelte, Vanilla) via the `db.subscribe()` API.
+
+## Peer-to-Peer Multi-Tab Synchronization
+
+Mortise embraces true local device simulation by treating individual browser tabs as independent disconnected peers. 
+
+1. **Isolated Storage:** Every tab spins up its own standalone background worker and provisions a uniquely identified IndexedDB partition.
+2. **Replication Protocol:** When local SQL mutations occur on one tab, the worker dynamically stamps the payload with the current `HLC` timestamp and broadcasts it across a native `BroadcastChannel`.
+3. **CRDT-Ready Ingestion:** Remote tabs ingest the SQL payload, logically advance their own `HLC` clocks, silently execute the query, and instantly trigger their local reactivity hooks to update the UI without ever getting stuck in infinite broadcast loops.
