@@ -24,6 +24,8 @@ interface SyncLogEntry {
   operation: string;
   receivedAt: number;
   resolution: 'applied' | 'rejected';
+  rowCount?: number;
+  sinceHlc?: string;
 }
 
 const MAX_SYNC_LOG = 5;
@@ -105,12 +107,20 @@ async function handleSyncMessage(data: any) {
     data;
 
   if (type === 'SYNC_REQUEST' && nodeId !== instanceId) {
-    console.log(`🤝 Mortise: Received sync request from ${nodeId}`);
+    const sinceHlc = data.sinceHlc || '0';
+    console.log(`🤝 Mortise: Received sync request from ${nodeId} (since: ${sinceHlc})`);
     try {
-      const results = await db.query('SELECT * FROM test_users');
+      // Delta Sync: Only return rows modified after the requested timestamp
+      const results = await db.query(
+        'SELECT * FROM test_users WHERE last_modified_hlc > $1',
+        [sinceHlc]
+      );
+      
       channel.postMessage({
         type: 'SYNC_RESPONSE',
         data: results.rows,
+        rowCount: results.rows.length,
+        sinceHlc,
         hlc: hlc.now(),
         targetNodeId: nodeId,
         senderNodeId: instanceId,
@@ -150,6 +160,8 @@ async function handleSyncMessage(data: any) {
         operation: 'HANDSHAKE',
         receivedAt: Date.now(),
         resolution: 'applied',
+        rowCount: data.rowCount,
+        sinceHlc: data.sinceHlc,
       });
 
       // Notify main thread handshake is fully applied
@@ -269,8 +281,23 @@ self.onmessage = async (event: MessageEvent) => {
       await handleSyncMessage(msg);
     }
     
-    // Broadcast initial sync request
-    channel.postMessage({ type: 'SYNC_REQUEST', nodeId: instanceId });
+    // Broadcast initial sync request with local max HLC for Delta Sync optimization
+    let maxHlc = '0';
+    try {
+      const res = await db.query('SELECT MAX(last_modified_hlc) as max_hlc FROM test_users');
+      const firstRow = res.rows?.[0] as any;
+      if (firstRow?.max_hlc) {
+        maxHlc = firstRow.max_hlc;
+      }
+    } catch (err) {
+      console.warn('Failed to find maxHlc for sync request:', err);
+    }
+
+    channel.postMessage({ 
+      type: 'SYNC_REQUEST', 
+      nodeId: instanceId, 
+      sinceHlc: maxHlc 
+    });
     return;
   }
 

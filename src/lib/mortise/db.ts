@@ -58,6 +58,8 @@ export interface SyncLogEntry {
   operation: string;
   receivedAt: number;
   resolution: 'applied' | 'rejected';
+  rowCount?: number;
+  sinceHlc?: string;
 }
 
 export interface SyncStatus {
