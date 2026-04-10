@@ -79,8 +79,63 @@ function toUpsert(sql: string): string {
 
 channel.onmessage = async (event) => {
   if (!event.data) return;
-  const { type, sql, params, hlc: remoteHlc, table, nodeId, recordId } =
+  const { type, sql, params, hlc: remoteHlc, table, nodeId, recordId, data, targetNodeId, senderNodeId } =
     event.data;
+
+  if (type === 'SYNC_REQUEST' && nodeId !== instanceId) {
+    console.log(`🤝 Mortise: Received sync request from ${nodeId}`);
+    try {
+      const results = await db.query('SELECT * FROM test_users');
+      channel.postMessage({
+        type: 'SYNC_RESPONSE',
+        data: results.rows,
+        hlc: hlc.now(),
+        targetNodeId: nodeId,
+        senderNodeId: instanceId,
+      });
+    } catch (err) {
+      console.error('Failed to handle SYNC_REQUEST:', err);
+    }
+    return;
+  }
+
+  if (type === 'SYNC_RESPONSE' && targetNodeId === instanceId) {
+    console.log(`🤝 Mortise: Received state handshake from ${senderNodeId}`);
+    
+    if (remoteHlc) {
+      hlc.receive(remoteHlc);
+    }
+
+    if (Array.isArray(data)) {
+      for (const row of data) {
+        // Construct an UPSERT for each row
+        // We know the table is test_users for now as per instructions
+        const cols = Object.keys(row);
+        const vals = Object.values(row);
+        const placeholders = vals.map((_, i) => `$${i + 1}`).join(', ');
+        const sql = `INSERT INTO test_users (${cols.join(', ')}) VALUES (${placeholders})`;
+        
+        try {
+          await db.query(toUpsert(sql), vals);
+        } catch (err) {
+          console.error('Failed to upsert row during handshake:', err);
+        }
+      }
+      
+      pushSyncLog({
+        nodeId: senderNodeId,
+        table: 'test_users',
+        hlc: remoteHlc || '',
+        operation: 'HANDSHAKE',
+        receivedAt: Date.now(),
+        resolution: 'applied',
+      });
+
+      // Refresh UI
+      self.postMessage({ type: 'REMOTE_TAB_CHANGED', table: 'test_users' });
+    }
+    return;
+  }
 
   if (type === 'REPLICATE_ADAPT' && nodeId !== instanceId) {
     console.log('📡 Mortise: Syncing change from another tab...');
@@ -225,3 +280,7 @@ self.onmessage = async (event: MessageEvent) => {
     self.postMessage({ id, results: null, error });
   }
 };
+
+// ─── Initial Handshake ──────────────────────────────────────────────
+// Broadcast a request for state as soon as we start up.
+channel.postMessage({ type: 'SYNC_REQUEST', nodeId: instanceId });

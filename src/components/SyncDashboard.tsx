@@ -16,6 +16,7 @@ const OP_COLORS: Record<string, string> = {
   INSERT: 'text-emerald-400',
   UPDATE: 'text-amber-400',
   DELETE: 'text-rose-400',
+  HANDSHAKE: 'text-indigo-400',
   UNKNOWN: 'text-zinc-400',
 };
 
@@ -23,6 +24,7 @@ const OP_LABELS: Record<string, string> = {
   INSERT: 'INS',
   UPDATE: 'UPD',
   DELETE: 'DEL',
+  HANDSHAKE: 'SYNC',
   UNKNOWN: '???',
 };
 
@@ -112,9 +114,18 @@ export function SyncDashboard() {
                         {OP_LABELS[entry.operation] ?? OP_LABELS.UNKNOWN}
                       </span>
                       <span className="text-zinc-400 truncate flex-1">
-                        <span className="text-zinc-300">{entry.table}</span>
-                        {' '}from{' '}
-                        <span className="text-indigo-400">{truncateNodeId(entry.nodeId)}</span>
+                        {entry.operation === 'HANDSHAKE' ? (
+                          <>
+                            <span className="text-indigo-400">🤝 State synced</span> from{' '}
+                          </>
+                        ) : (
+                          <>
+                            <span className="text-zinc-300">{entry.table}</span> from{' '}
+                          </>
+                        )}
+                        <span className="text-indigo-400">
+                          {truncateNodeId(entry.nodeId)}
+                        </span>
                       </span>
                       {/* LWW Resolution Badge */}
                       {entry.resolution === 'rejected' ? (
