@@ -35,6 +35,24 @@ Mortise uses a sequenced bootstrap process to ensure new nodes converge to the c
 3. **Verified Handshake:** Handshakes are HLC-aware; a node will only update its local records if the handshake data is strictly newer than its current state.
 4. **Loading Gate:** The UI waits for a `HANDSHAKE_COMPLETED` signal (with a 2s timeout) before allowing user interaction, preventing "flickers" of stale data.
 
+## 🔋 Storage: Persistent IndexedDB
+
+Unlike many memory-only demos, Mortise is fully persistent. It uses a **PGlite IndexedDB** strategy to ensure that data survives page refreshes and tab closures:
+
+- **Automatic Mounting:** The database is asynchronously mounted before any synchronization or querying begins.
+- **Node-Isolated Stores:** Each unique node (tab) maintains its own isolated IndexedDB storefront to prevent file-locking conflicts.
+
+## 🆔 Multi-Tab Safety: Hybrid Identity
+
+To support robust testing on `localhost` where all tabs share `localStorage`, Mortise employs a **Hybrid Identity** system:
+
+1. **Device ID (Stored: localStorage):** A stable prefix that identifies the browser/device.
+2. **Session ID (Stored: sessionStorage):** A unique suffix generated per tab that is stable across refreshes but unique across multiple tabs.
+
+**Format:** `DeviceID-SessionID` (e.g., `4367-io5k`)
+
+This ensures that tabs on the same port do not collide on IndexedDB locks or ignore each other's synchronization broadcasts.
+
 ## ⚡ Performance: Delta Sync
 
 To minimize payload sizes in established databases, Mortise employs a **Delta Sync** optimization during the handshake:
@@ -47,8 +65,9 @@ To minimize payload sizes in established databases, Mortise employs a **Delta Sy
 ## 📊 Visual Monitoring: Sync Dashboard
 
 Mortise includes a built-in debug dashboard to monitor the distributed state in real-time:
-- **Node Identity:** View the unique 8-character ID of the current tab.
-- **Clock State:** Real-time HLC monitoring.
+- **Node Identity:** View the unique Hybrid ID of the current tab.
+- **Storage Status:** Confirms `💾 Persistent (IDB)` status.
+- **Nuke Database:** A "big red button" to clear all local IndexedDB data and `localStorage` identity—essential for starting fresh tests.
 - **Event Log:** A rolling history of replication events with status badges:
   - `🤝 Synced X rows (Delta/Full)`: Indicates an initial handshake or refresh sync with row counts.
   - `✓ Applied`: The mutation was newer and successfully merged.
@@ -57,7 +76,8 @@ Mortise includes a built-in debug dashboard to monitor the distributed state in 
 
 ## 🛠️ Technology Stack
 
-- **Database:** [PGlite](https://pglite.dev/) (Postgres WASM) running in a Web Worker.
+- **Database:** [PGlite](https://pglite.dev/) (Postgres WASM) with **IndexedDB persistence**.
+- **Identity:** Hybrid `localStorage` + `sessionStorage` residency.
 - **Replication:** `BroadcastChannel` for low-latency multi-tab coordination.
 - **UI:** React + Tailwind CSS with a focus on high-fidelity dashboarding.
 

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useSyncStatus } from '../hooks/useSyncStatus';
+import { nukeDatabase } from '../lib/mortise/db';
 
 function timeAgo(ms: number): string {
   const seconds = Math.floor((Date.now() - ms) / 1000);
@@ -83,6 +84,21 @@ export function SyncDashboard() {
                 value={status?.currentHlc ?? '—'}
                 mono
               />
+              <StatusRow
+                label="Storage"
+                value="💾 Persistent (IDB)"
+                highlight
+              />
+            </div>
+
+            {/* Actions */}
+            <div className="px-3 py-2 border-b border-zinc-800/40">
+              <button
+                onClick={nukeDatabase}
+                className="w-full py-1.5 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-bold tracking-wider uppercase border border-rose-500/20 hover:border-rose-500/40 transition-all cursor-pointer"
+              >
+                ☢️ Nuke Database
+              </button>
             </div>
 
             {/* Network Activity */}

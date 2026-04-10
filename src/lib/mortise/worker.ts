@@ -1,16 +1,14 @@
 import { PGlite } from '@electric-sql/pglite';
 import { HLC } from './hlc';
 
-const instanceId = crypto.randomUUID().slice(0, 8);
-const hlc = new HLC(instanceId);
-
-// Initialize a new PGlite instance.
-// Using it in-memory for now, can be changed to indexeddb:// later
-const db = new PGlite('idb://mortise-' + instanceId);
+let instanceId: string;
+let hlc: HLC;
+let db: PGlite;
 
 const channel = new BroadcastChannel('mortise_sync');
 
 let syncReady = false;
+let dbReady = false;
 const pendingSyncMessages: any[] = [];
 
 // ─── Sync Status Tracking ───────────────────────────────────────────
@@ -268,11 +266,70 @@ channel.onmessage = async (event) => {
 // ─── Main Thread Message Handler ────────────────────────────────────
 
 self.onmessage = async (event: MessageEvent) => {
-  const { id, type, sql, params } = event.data;
+  const { id, type, sql, params, nodeId } = event.data;
+
+  // Handle initialization with stable nodeId from main thread
+  if (type === 'INIT') {
+    instanceId = nodeId;
+    hlc = new HLC(instanceId);
+    
+    // Initialize PGlite with IndexedDB persistence
+    db = new PGlite(`idb://mortise-db-${instanceId}`);
+    
+    // Ensure the database is fully mounted before proceeding
+    await db.waitReady;
+    dbReady = true;
+    
+    console.log(`💾 Mortise: Persistent storage initialized (idb://mortise-db-${instanceId})`);
+    return;
+  }
+
+  // Handle database nuke request
+  if (type === 'NUKE_DB') {
+    console.log('☢️ Mortise: Nuking database...');
+    if (db) {
+      await db.close();
+    }
+    
+    // Delete the IndexedDB database
+    // Note: PGlite prefixes the IDB name with 'pglite-'
+    const dbName = `pglite-mortise-db-${instanceId}`;
+    console.log(`🗑️ Mortise: Deleting IndexedDB [${dbName}]`);
+    const request = indexedDB.deleteDatabase(dbName);
+    
+    request.onsuccess = () => {
+      console.log('✅ Mortise: Database deleted successfully');
+      self.postMessage({ type: 'DATABASE_NUKED' });
+    };
+    
+    request.onerror = () => {
+      console.error('❌ Mortise: Failed to delete database');
+      self.postMessage({ type: 'DATABASE_NUKED' }); // Still reload to be safe
+    };
+    return;
+  }
+
+  // Ensure DB is ready before handling any other messages
+  if (!dbReady && type !== 'INIT') {
+    // If not ready, we could queue, but typical flow has INIT first.
+    // For raw SQL queries from bridge, they might arrive very fast.
+    let checkCount = 0;
+    while (!dbReady && checkCount < 50) {
+      await new Promise(r => setTimeout(r, 100));
+      checkCount++;
+    }
+  }
 
   // Handle synchronization trigger from main thread
   if (type === 'START_SYNC') {
     console.log('🏁 Mortise: Bootstrap complete. Starting synchronization...');
+    
+    // Ensure DB is fully ready before we start querying maxHlc
+    if (!dbReady) {
+      await db.waitReady;
+      dbReady = true;
+    }
+
     syncReady = true;
     
     // Process any messages that arrived during bootstrap
