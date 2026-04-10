@@ -18,12 +18,21 @@ Mortise implements a **Last Write Wins (LWW)** strategy to ensure convergence ac
 3. **Stale Rejection:** If `Incoming HLC <= Local HLC`, the update is rejected as "stale news."
 4. **Idempotency:** Remote updates are automatically converted to `UPSERT` (INSERT ... ON CONFLICT DO UPDATE) patterns to handle retries and out-of-order delivery gracefully.
 
+## 🤝 Bootstrapping: Initial State Handshake
+
+Mortise ensures that new tabs don't start with an empty database if other tabs are already open:
+
+1. **The Request:** On startup, a new worker broadcasts a `SYNC_REQUEST` with its unique node ID.
+2. **The Response:** Any active worker receiving the request queries its local database and broadcasts a `SYNC_RESPONSE` containing the full dataset.
+3. **The Catch-up:** The new worker performs a bulk `UPSERT` of the incoming data and synchronizes its HLC with the remote clock, ensuring it is ready to participate in the cluster immediately.
+
 ## 📊 Visual Monitoring: Sync Dashboard
 
 Mortise includes a built-in debug dashboard to monitor the distributed state in real-time:
 - **Node Identity:** View the unique 8-character ID of the current tab.
 - **Clock State:** Real-time HLC monitoring.
 - **Event Log:** A rolling history of replication events with status badges:
+  - `🤝 State synced`: A successful initial handshake from another tab.
   - `✓ Applied`: The mutation was newer and successfully merged.
   - `✗ Stale`: The mutation was older and was rejected by the LWW guard.
 
