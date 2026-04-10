@@ -1,7 +1,28 @@
 import DatabaseWorker from './worker?worker';
 
+// Hybrid Identity: Stable across refreshes, but unique per tab on the same port.
+const DEVICE_ID_KEY = 'MORTISE_NODE_ID';
+const SESSION_ID_KEY = 'MORTISE_SESSION_ID';
+
+let deviceId = localStorage.getItem(DEVICE_ID_KEY);
+if (!deviceId) {
+  deviceId = crypto.randomUUID().slice(0, 4);
+  localStorage.setItem(DEVICE_ID_KEY, deviceId);
+}
+
+let sessionId = sessionStorage.getItem(SESSION_ID_KEY);
+if (!sessionId) {
+  sessionId = Math.random().toString(36).substring(2, 6);
+  sessionStorage.setItem(SESSION_ID_KEY, sessionId);
+}
+
+const nodeId = `${deviceId}-${sessionId}`;
+
 // Start the Web Worker
 const worker = new DatabaseWorker();
+
+// Immediately initialize the worker with the stable nodeId
+worker.postMessage({ type: 'INIT', nodeId });
 
 // Keep track of pending queries to resolve their promises
 const pendingQueries = new Map<number, { resolve: (val: any) => void; reject: (err: any) => void }>();
@@ -46,6 +67,17 @@ export function onHandshake(listener: Listener) {
  */
 export function startSync() {
   worker.postMessage({ type: 'START_SYNC' });
+}
+
+/**
+ * Completely wipes the local database and resets the node identity.
+ */
+export function nukeDatabase() {
+  if (confirm('Are you sure you want to nuke the database? This will clear all local data and reset your Node ID.')) {
+    localStorage.removeItem(DEVICE_ID_KEY);
+    sessionStorage.removeItem(SESSION_ID_KEY);
+    worker.postMessage({ type: 'NUKE_DB' });
+  }
 }
 
 // ─── Sync Status Listener ───────────────────────────────────────────
@@ -120,6 +152,11 @@ worker.onmessage = (event: MessageEvent) => {
 
   if (type === 'HANDSHAKE_COMPLETED') {
     handshakeListeners.forEach(fn => fn());
+    return;
+  }
+
+  if (type === 'DATABASE_NUKED') {
+    window.location.reload();
     return;
   }
 
