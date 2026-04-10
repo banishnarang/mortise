@@ -118,7 +118,7 @@ export function SyncDashboard() {
                       <span className="text-zinc-400 truncate flex-1">
                         {entry.operation === 'HANDSHAKE' ? (
                           <>
-                            <span className="text-indigo-400">🤝 State synced</span> from{' '}
+                            <span className="text-indigo-400">🤝 Synced {entry.rowCount ?? 0} {entry.rowCount === 1 ? 'row' : 'rows'} {entry.sinceHlc && entry.sinceHlc !== '0' ? '(Delta)' : '(Full)'}</span> from{' '}
                           </>
                         ) : (
                           <>
