@@ -16,15 +16,24 @@ Mortise implements a **Last Write Wins (LWW)** strategy to ensure convergence ac
 1. **Guarded Writes:** Every table includes a `last_modified_hlc` column.
 2. **Deterministic Merging:** Before applying a remote replication message, the worker compares the incoming HLC with the local record's HLC.
 3. **Stale Rejection:** If `Incoming HLC <= Local HLC`, the update is rejected as "stale news."
-4. **Idempotency:** Remote updates are automatically converted to `UPSERT` (INSERT ... ON CONFLICT DO UPDATE) patterns to handle retries and out-of-order delivery gracefully.
+4. **Zombie Guard:** Mortise specifically protects against "zombies"—deleted records returning to life due to stale updates. If a remote update arrives for a row already marked as deleted locally, it is rejected unless the remote HLC is strictly newer than the local tombstone.
 
-## 🤝 Bootstrapping: Initial State Handshake
+## 👻 Reliable Deletion: Tombstones
 
-Mortise ensures that new tabs don't start with an empty database if other tabs are already open:
+Instead of destructive `DELETE` operations, Mortise uses **Tombstones** to ensure deletion synchronization is permanent and reliable:
 
-1. **The Request:** On startup, a new worker broadcasts a `SYNC_REQUEST` with its unique node ID.
-2. **The Response:** Any active worker receiving the request queries its local database and broadcasts a `SYNC_RESPONSE` containing the full dataset.
-3. **The Catch-up:** The new worker performs a bulk `UPSERT` of the incoming data and synchronizes its HLC with the remote clock, ensuring it is ready to participate in the cluster immediately.
+- **Soft Deletes:** Records are marked with `is_deleted = true`.
+- **Filtering:** The UI automatically filters out these tombstones, but the data remains to provide a "memory" of the deletion for conflict resolution.
+- **Convergence:** Tombstones are broadcasted just like inserts, ensuring all nodes reach the same state even if they were offline during the deletion event.
+
+## 🤝 Bootstrapping: Bulletproof Initialization
+
+Mortise uses a sequenced bootstrap process to ensure new nodes converge to the correct state without race conditions:
+
+1. **Sequenced Startup:** The UI coordinates with the worker to ensure tables are created before synchronization begins.
+2. **Message Queuing:** Incoming replication events arriving during startup are queued in a buffer and processed only after the initial handshake is ready.
+3. **Verified Handshake:** Handshakes are HLC-aware; a node will only update its local records if the handshake data is strictly newer than its current state.
+4. **Loading Gate:** The UI waits for a `HANDSHAKE_COMPLETED` signal (with a 2s timeout) before allowing user interaction, preventing "flickers" of stale data.
 
 ## 📊 Visual Monitoring: Sync Dashboard
 
@@ -34,7 +43,8 @@ Mortise includes a built-in debug dashboard to monitor the distributed state in 
 - **Event Log:** A rolling history of replication events with status badges:
   - `🤝 State synced`: A successful initial handshake from another tab.
   - `✓ Applied`: The mutation was newer and successfully merged.
-  - `✗ Stale`: The mutation was older and was rejected by the LWW guard.
+  - `👻 DEL`: A tombstone was received and applied.
+  - `✗ Stale`: The mutation was older and was rejected (LWW or Zombie Guard).
 
 ## 🛠️ Technology Stack
 
@@ -59,4 +69,5 @@ npm run dev
 2. Open **two or more tabs** side-by-side.
 3. Click **"+ Add User"** in Tab A.
 4. Observe Tab B's dashboard receiving the event and updating its table in real-time.
-5. Use the console to simulate "Time Travel" conflicts by broadcasting old HLCs and watching the LWW engine reject them.
+5. **Delete a User**: Click "Delete" and observe the `👻 DEL` ghost badge arrival in other tabs.
+6. **Stress Test**: Rapidly refresh Tab A while deleting in Tab B to observe the **Zombie Guard** and **Sequenced Bootstrap** in action.

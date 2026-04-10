@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { query, subscribe } from './lib/mortise/db';
+import { query, subscribe, startSync, onHandshake } from './lib/mortise/db';
 import { SyncDashboard } from './components/SyncDashboard';
 
 interface TestUser {
@@ -13,18 +13,39 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [reactivityCount, setReactivityCount] = useState(0);
 
-  // Bootstrap: create table and load initial data
+  // Bootstrap: create table, start sync, and wait for handshake
   useEffect(() => {
     (async () => {
       try {
+        // 1. Ensure schema exists
         await query(`
           CREATE TABLE IF NOT EXISTS test_users (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
-            last_modified_hlc TEXT
+            last_modified_hlc TEXT,
+            is_deleted BOOLEAN DEFAULT FALSE
           );
         `);
-        const res = await query(`SELECT * FROM test_users`);
+
+        // 2. Set up handshake listener
+        let handshakeDone = false;
+        const unsubHandshake = onHandshake(() => {
+          console.log('🤝 UI: Handshake received, ready to display.');
+          handshakeDone = true;
+        });
+
+        // 3. Trigger sync request in worker
+        startSync();
+
+        // 4. Wait for handshake OR 2s timeout (for solitary tabs)
+        const startTime = Date.now();
+        while (!handshakeDone && Date.now() - startTime < 2000) {
+          await new Promise(r => setTimeout(r, 100));
+        }
+        unsubHandshake();
+
+        // 5. Final query to load initial state
+        const res = await query(`SELECT * FROM test_users WHERE is_deleted = false`);
         setUsers(res.rows);
         setReady(true);
       } catch (err: any) {
@@ -36,9 +57,9 @@ export function App() {
   // Subscribe to table changes for reactivity
   useEffect(() => {
     if (!ready) return;
-    const unsub = subscribe(`SELECT * FROM test_users`, () => {
+    const unsub = subscribe(`SELECT * FROM test_users WHERE is_deleted = false`, () => {
       setReactivityCount(c => c + 1);
-      query(`SELECT * FROM test_users`).then(res => setUsers(res.rows));
+      query(`SELECT * FROM test_users WHERE is_deleted = false`).then(res => setUsers(res.rows));
     });
     return unsub;
   }, [ready]);
@@ -47,11 +68,19 @@ export function App() {
     const names = ['Alice', 'Bob', 'Charlie', 'Diana', 'Eve', 'Frank', 'Grace', 'Heidi'];
     const name = names[Math.floor(Math.random() * names.length)];
     const id = crypto.randomUUID();
-    await query(`INSERT INTO test_users (id, name, last_modified_hlc) VALUES ($1, $2, $3)`, [id, name, '__HLC_NOW__']);
+    await query(`INSERT INTO test_users (id, name, last_modified_hlc, is_deleted) VALUES ($1, $2, $3, false)`, [id, name, '__HLC_NOW__']);
+  }, []);
+
+  const deleteUser = useCallback(async (id: string) => {
+    await query(`UPDATE test_users SET is_deleted = true, last_modified_hlc = $1 WHERE id = $2`, ['__HLC_NOW__', id]);
   }, []);
 
   const clearUsers = useCallback(async () => {
-    await query(`DELETE FROM test_users`);
+    const res = await query(`SELECT id FROM test_users WHERE is_deleted = false`);
+    const ids = res.rows.map((r: any) => r.id);
+    for (const id of ids) {
+      await query(`UPDATE test_users SET is_deleted = true, last_modified_hlc = $1 WHERE id = $2`, ['__HLC_NOW__', id]);
+    }
   }, []);
 
   if (error) {
@@ -123,6 +152,7 @@ export function App() {
               <tr className="text-left text-[11px] text-zinc-500 uppercase tracking-wider">
                 <th className="px-4 py-2 font-medium">ID</th>
                 <th className="px-4 py-2 font-medium">Name</th>
+                <th className="px-4 py-2 font-medium text-right">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-800/50">
@@ -130,6 +160,14 @@ export function App() {
                 <tr key={u.id} className="hover:bg-zinc-900/50 transition-colors">
                   <td className="px-4 py-2 font-mono text-xs text-zinc-500">{u.id.slice(0, 12)}…</td>
                   <td className="px-4 py-2 text-zinc-200">{u.name}</td>
+                  <td className="px-4 py-2 text-right">
+                    <button
+                      onClick={() => deleteUser(u.id)}
+                      className="text-[10px] text-zinc-500 hover:text-rose-400 transition-colors font-medium border border-zinc-700 hover:border-rose-400/30 px-2 py-0.5 rounded uppercase tracking-tighter"
+                    >
+                      Delete
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>

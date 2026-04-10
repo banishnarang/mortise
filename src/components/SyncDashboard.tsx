@@ -16,6 +16,7 @@ const OP_COLORS: Record<string, string> = {
   INSERT: 'text-emerald-400',
   UPDATE: 'text-amber-400',
   DELETE: 'text-rose-400',
+  SOFT_DELETE: 'text-zinc-500',
   HANDSHAKE: 'text-indigo-400',
   UNKNOWN: 'text-zinc-400',
 };
@@ -23,7 +24,8 @@ const OP_COLORS: Record<string, string> = {
 const OP_LABELS: Record<string, string> = {
   INSERT: 'INS',
   UPDATE: 'UPD',
-  DELETE: 'DEL',
+  DELETE: 'CLR',
+  SOFT_DELETE: '👻 DEL',
   HANDSHAKE: 'SYNC',
   UNKNOWN: '???',
 };

@@ -30,6 +30,24 @@ export function subscribe(sql: string, listener: Listener) {
   };
 }
 
+const handshakeListeners = new Set<Listener>();
+
+/**
+ * Registers a listener for when the initial state handshake is complete.
+ */
+export function onHandshake(listener: Listener) {
+  handshakeListeners.add(listener);
+  return () => { handshakeListeners.delete(listener); };
+}
+
+/**
+ * Commands the worker to start the synchronization process.
+ * This should be called after initial schema setup is complete.
+ */
+export function startSync() {
+  worker.postMessage({ type: 'START_SYNC' });
+}
+
 // ─── Sync Status Listener ───────────────────────────────────────────
 // Listeners that want to receive SYNC_STATUS payloads from the worker.
 
@@ -95,6 +113,11 @@ worker.onmessage = (event: MessageEvent) => {
     if (tableListeners) {
       tableListeners.forEach(fn => fn());
     }
+    return;
+  }
+
+  if (type === 'HANDSHAKE_COMPLETED') {
+    handshakeListeners.forEach(fn => fn());
     return;
   }
 

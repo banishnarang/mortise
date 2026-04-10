@@ -10,6 +10,9 @@ const db = new PGlite('idb://mortise-' + instanceId);
 
 const channel = new BroadcastChannel('mortise_sync');
 
+let syncReady = false;
+const pendingSyncMessages: any[] = [];
+
 // ─── Sync Status Tracking ───────────────────────────────────────────
 // Keep a rolling log of the last 5 REPLICATE_ADAPT events received
 // from other tabs so we can surface them in a debug dashboard.
@@ -48,11 +51,24 @@ const INSERT_COLS_RE =
  */
 function extractRecordId(sql: string, params?: any[]): string | null {
   if (!params?.length) return null;
+
+  // Case 1: INSERT INTO ... (id, ...) VALUES ($1, ...)
   const colMatch = sql.match(INSERT_COLS_RE);
-  if (!colMatch) return null;
-  const cols = colMatch[1].split(',').map(c => c.trim().replace(/["`]/g, ''));
-  const idIndex = cols.indexOf('id');
-  return idIndex >= 0 ? String(params[idIndex]) : null;
+  if (colMatch) {
+    const cols = colMatch[1].split(',').map(c => c.trim().replace(/["`]/g, ''));
+    const idIndex = cols.indexOf('id');
+    return idIndex >= 0 ? String(params[idIndex]) : null;
+  }
+
+  // Case 2: UPDATE table SET ... WHERE id = $x
+  // This matches both single row updates and where clauses with $ placeholders
+  const updateMatch = sql.match(/UPDATE\s+["`]?[a-zA-Z0-9_]+["`]?\s+SET.*?WHERE\s+id\s*=\s*\$(\d+)/i);
+  if (updateMatch) {
+    const paramIndex = parseInt(updateMatch[1], 10) - 1;
+    return paramIndex >= 0 && paramIndex < params.length ? String(params[paramIndex]) : null;
+  }
+
+  return null;
 }
 
 /**
@@ -63,6 +79,10 @@ function extractRecordId(sql: string, params?: any[]): string | null {
 function toUpsert(sql: string): string {
   if (!/^\s*INSERT\s+INTO/i.test(sql)) return sql;
 
+  const tableMatch = sql.match(/INSERT\s+INTO\s+["`]?([a-zA-Z0-9_]+)["`]?/i);
+  if (!tableMatch) return sql;
+  const table = tableMatch[1];
+
   const colMatch = sql.match(INSERT_COLS_RE);
   if (!colMatch) return sql;
 
@@ -72,15 +92,17 @@ function toUpsert(sql: string): string {
   if (nonPkCols.length === 0) return sql;
 
   const updateSet = nonPkCols.map(c => `${c} = EXCLUDED.${c}`).join(', ');
-  return `${sql.trim().replace(/;?\s*$/, '')} ON CONFLICT (id) DO UPDATE SET ${updateSet}`;
+  
+  // Enforce LWW: Only update if the incoming HLC is strictly newer than the local one.
+  return `${sql.trim().replace(/;?\s*$/, '')} ON CONFLICT (id) DO UPDATE SET ${updateSet} WHERE EXCLUDED.last_modified_hlc > ${table}.last_modified_hlc`;
 }
 
 // ─── BroadcastChannel Listener ──────────────────────────────────────
 
-channel.onmessage = async (event) => {
-  if (!event.data) return;
-  const { type, sql, params, hlc: remoteHlc, table, nodeId, recordId, data, targetNodeId, senderNodeId } =
-    event.data;
+async function handleSyncMessage(data: any) {
+  if (!data) return;
+  const { type, sql, params, hlc: remoteHlc, table, nodeId, recordId, data: bulkData, targetNodeId, senderNodeId } =
+    data;
 
   if (type === 'SYNC_REQUEST' && nodeId !== instanceId) {
     console.log(`🤝 Mortise: Received sync request from ${nodeId}`);
@@ -106,17 +128,16 @@ channel.onmessage = async (event) => {
       hlc.receive(remoteHlc);
     }
 
-    if (Array.isArray(data)) {
-      for (const row of data) {
+    if (Array.isArray(bulkData)) {
+      for (const row of bulkData) {
         // Construct an UPSERT for each row
-        // We know the table is test_users for now as per instructions
         const cols = Object.keys(row);
         const vals = Object.values(row);
         const placeholders = vals.map((_, i) => `$${i + 1}`).join(', ');
-        const sql = `INSERT INTO test_users (${cols.join(', ')}) VALUES (${placeholders})`;
+        const insertSql = `INSERT INTO test_users (${cols.join(', ')}) VALUES (${placeholders})`;
         
         try {
-          await db.query(toUpsert(sql), vals);
+          await db.query(toUpsert(insertSql), vals);
         } catch (err) {
           console.error('Failed to upsert row during handshake:', err);
         }
@@ -131,7 +152,8 @@ channel.onmessage = async (event) => {
         resolution: 'applied',
       });
 
-      // Refresh UI
+      // Notify main thread handshake is fully applied
+      self.postMessage({ type: 'HANDSHAKE_COMPLETED', table: 'test_users' });
       self.postMessage({ type: 'REMOTE_TAB_CHANGED', table: 'test_users' });
     }
     return;
@@ -146,15 +168,20 @@ channel.onmessage = async (event) => {
 
     // Detect operation type from the replicated SQL
     const opMatch = sql?.match(/^\s*(INSERT|UPDATE|DELETE)/i);
-    const operation = opMatch ? opMatch[1].toUpperCase() : 'UNKNOWN';
+    let operation = opMatch ? opMatch[1].toUpperCase() : 'UNKNOWN';
 
-    // ─── LWW Guard ──────────────────────────────────────────────
+    // If it's an UPDATE setting is_deleted=true, it's a SOFT_DELETE
+    if (operation === 'UPDATE' && /is_deleted\s*=\s*true/i.test(sql || '')) {
+      operation = 'SOFT_DELETE';
+    }
+
+    // ─── LWW Guard (Operation Zombie Hunter) ───────────────────────
     let resolution: 'applied' | 'rejected' = 'applied';
 
     if (remoteHlc && recordId && table) {
       try {
         const existing = await db.query(
-          `SELECT last_modified_hlc FROM ${table} WHERE id = $1`,
+          `SELECT last_modified_hlc, is_deleted FROM ${table} WHERE id = $1`,
           [recordId],
         );
 
@@ -162,19 +189,23 @@ channel.onmessage = async (event) => {
           existing.rows.length > 0 &&
           (existing.rows[0] as any).last_modified_hlc
         ) {
-          const localHlc = (existing.rows[0] as any).last_modified_hlc as string;
+          const row = existing.rows[0] as any;
+          const localHlc = row.last_modified_hlc as string;
+          const localIsDeleted = !!row.is_deleted;
+
           if (HLC.compare(remoteHlc, localHlc) <= 0) {
             // Incoming timestamp is older or equal — reject the stale write
             resolution = 'rejected';
+            const reason = localIsDeleted ? 'Zombie Guard' : 'LWW Stale';
             console.log(
-              `⚔️ Mortise LWW: Rejecting stale update from ${nodeId} ` +
+              `⚔️ Mortise ${reason}: Rejecting stale update from ${nodeId} ` +
                 `(incoming: ${remoteHlc.slice(0, 24)} ≤ local: ${localHlc.slice(0, 24)})`,
             );
+          } else if (localIsDeleted) {
+            console.log(`🧟 Mortise: Resurrecting ${recordId} via newer remote write`);
           }
         }
       } catch (err) {
-        // If the guard query fails (e.g. table doesn't have the column yet),
-        // allow the write through rather than silently dropping data.
         console.warn('Mortise LWW check failed, allowing write:', err);
       }
     }
@@ -211,12 +242,37 @@ channel.onmessage = async (event) => {
       });
     }
   }
+}
+
+channel.onmessage = async (event) => {
+  if (!syncReady) {
+    console.log('📥 Mortise: Queuing sync message until bootstrap complete');
+    pendingSyncMessages.push(event.data);
+    return;
+  }
+  await handleSyncMessage(event.data);
 };
 
 // ─── Main Thread Message Handler ────────────────────────────────────
 
 self.onmessage = async (event: MessageEvent) => {
   const { id, type, sql, params } = event.data;
+
+  // Handle synchronization trigger from main thread
+  if (type === 'START_SYNC') {
+    console.log('🏁 Mortise: Bootstrap complete. Starting synchronization...');
+    syncReady = true;
+    
+    // Process any messages that arrived during bootstrap
+    while (pendingSyncMessages.length > 0) {
+      const msg = pendingSyncMessages.shift();
+      await handleSyncMessage(msg);
+    }
+    
+    // Broadcast initial sync request
+    channel.postMessage({ type: 'SYNC_REQUEST', nodeId: instanceId });
+    return;
+  }
 
   // Handle sync status requests from the main thread
   if (type === 'GET_SYNC_STATUS') {
@@ -282,5 +338,4 @@ self.onmessage = async (event: MessageEvent) => {
 };
 
 // ─── Initial Handshake ──────────────────────────────────────────────
-// Broadcast a request for state as soon as we start up.
-channel.postMessage({ type: 'SYNC_REQUEST', nodeId: instanceId });
+// REMOVED: Auto-fire SYNC_REQUEST. Now triggered by START_SYNC from main thread.
