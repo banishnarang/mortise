@@ -1,30 +1,53 @@
 # Mortise
 
-Mortise is a local-first synchronization framework designed to seamlessly sync data between disconnected clients and over the network using robust distributed systems primitives.
+Mortise is a local-first synchronization framework designed to seamlessly sync data between disconnected clients using robust distributed systems primitives.
 
-## The Heartbeat: Hybrid Logical Clocks
+## 🕰️ The Heartbeat: Hybrid Logical Clocks (HLC)
 
-At the core of Mortise's conflict-free sync architecture is the **Hybrid Logical Clock (HLC)**. Because nodes in an eventually-consistent distributed system (like browsers or mobile apps) cannot rely on perfectly synchronized physical hardware clocks, Mortise uses HLCs to gracefully assign globally unique, sortable timestamps to all local data mutations.
+At the core of Mortise is the **Hybrid Logical Clock (HLC)**. Because distributed nodes (browsers, mobile apps) cannot rely on perfectly synchronized hardware clocks, Mortise uses HLCs to assign globally unique, sortable timestamps (`ISO-CCCC-nodeId`) to all mutations.
 
-### How Mortise Uses HLCs
-1. **Preserving True Causality:** Unlike a standard `Date.now()` timestamp, HLCs guarantee event causality. If a local mutation relies on data received from another client, the `receive` action bumps the local logical clock forward. This guarantees the local reaction strictly happens "after" the event that caused it, preserving sequential integrity across the network.
-2. **Offline Resilience:** HLCs enable Mortise to track state perfectly during offline gaps. When clients eventually reconnect and exchange data streams, their offline timelines effortlessly zip together. The deterministic structure (incorporating physical time, an event counter, and a tie-breaking `nodeId`) means any peer can precisely order events identically without a central server.
-3. **Painless Serialization:** Mortise encodes these clocks identically to strict ISO lexicographic patterns (e.g. `2026-04-08T12:00:00.000Z-0000-node123`). This means that your underlying storage layer—whether it’s IndexedDB, SQLite, or a cloud backend—can trivially sort state transitions organically as strings.
+- **Causality Tracking:** The `hlc.receive()` action ensures local clocks "jump" forward to stay ahead of any remote data received.
+- **Lexicographic Sorting:** Encoded HLCs are naturally sortable as strings, making conflict resolution computationally cheap.
 
-## The Body: WASM Database
+## 🛡️ Conflict Resolution: Last Write Wins (LWW)
 
-Mortise uses a **PGlite** instance running in a dedicated Web Worker thread. This leverages WebAssembly (WASM) to run a lightweight, actual PostgreSQL engine right in the browser. 
+Mortise implements a **Last Write Wins (LWW)** strategy to ensure convergence across all nodes:
 
-By offloading all database initialization, SQL parsing, and data manipulation to a background worker string, the main thread remains entirely unblocked. The application's UI stays responsive down to the frame while relying on robust local-first persistence capabilities.
+1. **Guarded Writes:** Every table includes a `last_modified_hlc` column.
+2. **Deterministic Merging:** Before applying a remote replication message, the worker compares the incoming HLC with the local record's HLC.
+3. **Stale Rejection:** If `Incoming HLC <= Local HLC`, the update is rejected as "stale news."
+4. **Idempotency:** Remote updates are automatically converted to `UPSERT` (INSERT ... ON CONFLICT DO UPDATE) patterns to handle retries and out-of-order delivery gracefully.
 
-## Framework-Agnostic Core
+## 📊 Visual Monitoring: Sync Dashboard
 
-Mortise uses a **Framework-Agnostic Core**. The database engine handles SQL parsing and change-notifications natively. React hooks are provided as a lightweight convenience layer, but the engine can be used with any framework (Vue, Svelte, Vanilla) via the `db.subscribe()` API.
+Mortise includes a built-in debug dashboard to monitor the distributed state in real-time:
+- **Node Identity:** View the unique 8-character ID of the current tab.
+- **Clock State:** Real-time HLC monitoring.
+- **Event Log:** A rolling history of replication events with status badges:
+  - `✓ Applied`: The mutation was newer and successfully merged.
+  - `✗ Stale`: The mutation was older and was rejected by the LWW guard.
 
-## Peer-to-Peer Multi-Tab Synchronization
+## 🛠️ Technology Stack
 
-Mortise embraces true local device simulation by treating individual browser tabs as independent disconnected peers. 
+- **Database:** [PGlite](https://pglite.dev/) (Postgres WASM) running in a Web Worker.
+- **Replication:** `BroadcastChannel` for low-latency multi-tab coordination.
+- **UI:** React + Tailwind CSS with a focus on high-fidelity dashboarding.
 
-1. **Isolated Storage:** Every tab spins up its own standalone background worker and provisions a uniquely identified IndexedDB partition.
-2. **Replication Protocol:** When local SQL mutations occur on one tab, the worker dynamically stamps the payload with the current `HLC` timestamp and broadcasts it across a native `BroadcastChannel`.
-3. **CRDT-Ready Ingestion:** Remote tabs ingest the SQL payload, logically advance their own `HLC` clocks, silently execute the query, and instantly trigger their local reactivity hooks to update the UI without ever getting stuck in infinite broadcast loops.
+## 🚀 Getting Started
+
+### Installation
+```bash
+npm install
+```
+
+### Development
+```bash
+npm run dev
+```
+
+### Testing Synchronization
+1. Open the dev server (usually `localhost:5173`).
+2. Open **two or more tabs** side-by-side.
+3. Click **"+ Add User"** in Tab A.
+4. Observe Tab B's dashboard receiving the event and updating its table in real-time.
+5. Use the console to simulate "Time Travel" conflicts by broadcasting old HLCs and watching the LWW engine reject them.

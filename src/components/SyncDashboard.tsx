@@ -116,6 +116,19 @@ export function SyncDashboard() {
                         {' '}from{' '}
                         <span className="text-indigo-400">{truncateNodeId(entry.nodeId)}</span>
                       </span>
+                      {/* LWW Resolution Badge */}
+                      {entry.resolution === 'rejected' ? (
+                        <span
+                          className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-amber-400 bg-amber-400/10 border border-amber-400/20 rounded px-1.5 py-0.5 whitespace-nowrap"
+                          title={`Ignoring stale update from Node ${entry.nodeId}`}
+                        >
+                          ✗ Stale
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 rounded px-1.5 py-0.5 whitespace-nowrap">
+                          ✓ Applied
+                        </span>
+                      )}
                       <span className="text-[9px] text-zinc-600 whitespace-nowrap">
                         {timeAgo(entry.receivedAt)}
                       </span>

@@ -39,6 +39,7 @@ export interface SyncLogEntry {
   hlc: string;
   operation: string;
   receivedAt: number;
+  resolution: 'applied' | 'rejected';
 }
 
 export interface SyncStatus {
@@ -80,6 +81,16 @@ worker.onmessage = (event: MessageEvent) => {
       // Logic specific to a remote update could go here
     }
 
+    const tableListeners = listeners.get(table);
+    if (tableListeners) {
+      tableListeners.forEach(fn => fn());
+    }
+    return;
+  }
+
+  // A stale write was rejected by the LWW guard — notify listeners so the
+  // dashboard can surface the conflict resolution without triggering a re-query.
+  if (type === 'CONFLICT_RESOLVED') {
     const tableListeners = listeners.get(table);
     if (tableListeners) {
       tableListeners.forEach(fn => fn());
