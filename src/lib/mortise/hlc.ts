@@ -63,6 +63,17 @@ export class HLC {
   }
 
   /**
+   * Compares two encoded HLC timestamps lexicographically.
+   * Because the encoded format is ISO-CCCC-nodeId, plain string
+   * comparison correctly reflects happened-before ordering.
+   *
+   * @returns < 0 if a < b, 0 if equal, > 0 if a > b.
+   */
+  static compare(a: string, b: string): number {
+    return a.localeCompare(b);
+  }
+
+  /**
    * Serializes the HLC state into a lexically sortable string.
    * Essential for distributed databases (like CRDTs or local-first sync) because
    * standard string sorting on the encoded format correctly orders events by happened-before relationships

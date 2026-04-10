@@ -20,7 +20,8 @@ export function App() {
         await query(`
           CREATE TABLE IF NOT EXISTS test_users (
             id TEXT PRIMARY KEY,
-            name TEXT NOT NULL
+            name TEXT NOT NULL,
+            last_modified_hlc TEXT
           );
         `);
         const res = await query(`SELECT * FROM test_users`);
@@ -46,7 +47,7 @@ export function App() {
     const names = ['Alice', 'Bob', 'Charlie', 'Diana', 'Eve', 'Frank', 'Grace', 'Heidi'];
     const name = names[Math.floor(Math.random() * names.length)];
     const id = crypto.randomUUID();
-    await query(`INSERT INTO test_users (id, name) VALUES ($1, $2)`, [id, name]);
+    await query(`INSERT INTO test_users (id, name, last_modified_hlc) VALUES ($1, $2, $3)`, [id, name, '__HLC_NOW__']);
   }, []);
 
   const clearUsers = useCallback(async () => {

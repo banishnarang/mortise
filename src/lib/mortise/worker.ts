@@ -20,6 +20,7 @@ interface SyncLogEntry {
   hlc: string;
   operation: string;
   receivedAt: number;
+  resolution: 'applied' | 'rejected';
 }
 
 const MAX_SYNC_LOG = 5;
@@ -32,15 +33,58 @@ function pushSyncLog(entry: SyncLogEntry) {
   }
 }
 
+// ─── SQL Helpers ────────────────────────────────────────────────────
+// Robust regexes that handle optional quoting (double-quotes, backticks).
+
+const TABLE_RE =
+  /(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+["`]?([a-zA-Z0-9_]+)["`]?/i;
+
+const INSERT_COLS_RE =
+  /INSERT\s+INTO\s+["`]?[a-zA-Z0-9_]+["`]?\s*\(([^)]+)\)/i;
+
+/**
+ * Extracts the primary-key value from an INSERT statement by locating the
+ * `id` column in the column list and returning the matching parameter.
+ */
+function extractRecordId(sql: string, params?: any[]): string | null {
+  if (!params?.length) return null;
+  const colMatch = sql.match(INSERT_COLS_RE);
+  if (!colMatch) return null;
+  const cols = colMatch[1].split(',').map(c => c.trim().replace(/["`]/g, ''));
+  const idIndex = cols.indexOf('id');
+  return idIndex >= 0 ? String(params[idIndex]) : null;
+}
+
+/**
+ * Converts an INSERT statement into an UPSERT
+ * (INSERT … ON CONFLICT (id) DO UPDATE SET …).
+ * This makes replication idempotent — retries are harmless.
+ */
+function toUpsert(sql: string): string {
+  if (!/^\s*INSERT\s+INTO/i.test(sql)) return sql;
+
+  const colMatch = sql.match(INSERT_COLS_RE);
+  if (!colMatch) return sql;
+
+  const cols = colMatch[1].split(',').map(c => c.trim().replace(/["`]/g, ''));
+  const nonPkCols = cols.filter(c => c !== 'id');
+
+  if (nonPkCols.length === 0) return sql;
+
+  const updateSet = nonPkCols.map(c => `${c} = EXCLUDED.${c}`).join(', ');
+  return `${sql.trim().replace(/;?\s*$/, '')} ON CONFLICT (id) DO UPDATE SET ${updateSet}`;
+}
+
 // ─── BroadcastChannel Listener ──────────────────────────────────────
 
 channel.onmessage = async (event) => {
   if (!event.data) return;
-  const { type, sql, params, hlc: remoteHlc, table, nodeId } = event.data;
+  const { type, sql, params, hlc: remoteHlc, table, nodeId, recordId } =
+    event.data;
 
   if (type === 'REPLICATE_ADAPT' && nodeId !== instanceId) {
-    console.log("📡 Mortise: Syncing change from another tab...");
-    
+    console.log('📡 Mortise: Syncing change from another tab...');
+
     if (remoteHlc) {
       hlc.receive(remoteHlc);
     }
@@ -49,21 +93,67 @@ channel.onmessage = async (event) => {
     const opMatch = sql?.match(/^\s*(INSERT|UPDATE|DELETE)/i);
     const operation = opMatch ? opMatch[1].toUpperCase() : 'UNKNOWN';
 
+    // ─── LWW Guard ──────────────────────────────────────────────
+    let resolution: 'applied' | 'rejected' = 'applied';
+
+    if (remoteHlc && recordId && table) {
+      try {
+        const existing = await db.query(
+          `SELECT last_modified_hlc FROM ${table} WHERE id = $1`,
+          [recordId],
+        );
+
+        if (
+          existing.rows.length > 0 &&
+          (existing.rows[0] as any).last_modified_hlc
+        ) {
+          const localHlc = (existing.rows[0] as any).last_modified_hlc as string;
+          if (HLC.compare(remoteHlc, localHlc) <= 0) {
+            // Incoming timestamp is older or equal — reject the stale write
+            resolution = 'rejected';
+            console.log(
+              `⚔️ Mortise LWW: Rejecting stale update from ${nodeId} ` +
+                `(incoming: ${remoteHlc.slice(0, 24)} ≤ local: ${localHlc.slice(0, 24)})`,
+            );
+          }
+        }
+      } catch (err) {
+        // If the guard query fails (e.g. table doesn't have the column yet),
+        // allow the write through rather than silently dropping data.
+        console.warn('Mortise LWW check failed, allowing write:', err);
+      }
+    }
+
     pushSyncLog({
       nodeId,
       table: table || 'unknown',
       hlc: remoteHlc || '',
       operation,
       receivedAt: Date.now(),
+      resolution,
     });
 
-    try {
-      if (sql) {
-        await db.query(sql, params);
+    if (resolution === 'applied') {
+      try {
+        if (sql) {
+          await db.query(sql, params);
+        }
+        self.postMessage({ type: 'REMOTE_TAB_CHANGED', table });
+      } catch (err) {
+        console.error('Mortise sync error:', err);
       }
-      self.postMessage({ type: 'REMOTE_TAB_CHANGED', table });
-    } catch (err) {
-      console.error("Mortise sync error:", err);
+    } else {
+      // Notify the main thread so the dashboard can surface the conflict
+      self.postMessage({
+        type: 'CONFLICT_RESOLVED',
+        table,
+        payload: {
+          nodeId,
+          table,
+          hlc: remoteHlc,
+          resolution: 'rejected',
+        },
+      });
     }
   }
 };
@@ -87,25 +177,48 @@ self.onmessage = async (event: MessageEvent) => {
   }
 
   try {
+    // ─── HLC Stamping ─────────────────────────────────────────
+    // Replace __HLC_NOW__ sentinel values in params with a fresh
+    // HLC timestamp.  This keeps the main thread unaware of clock
+    // internals — it just passes the placeholder.
+    let resolvedParams = params;
+    let stampedHlc: string | null = null;
+
+    if (params?.length) {
+      resolvedParams = params.map((p: any) => {
+        if (p === '__HLC_NOW__') {
+          stampedHlc = hlc.now();
+          return stampedHlc;
+        }
+        return p;
+      });
+    }
+
     // Execute the SQL
-    const results = await db.query(sql, params);
-    
+    const results = await db.query(sql, resolvedParams);
+
     // Post the results back to the main thread
     self.postMessage({ id, results, error: null });
 
-    // Simple heuristic: if it's an INSERT, UPDATE, or DELETE, notify the main thread
-    const tableMatch = sql.match(/(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+([a-zA-Z0-9_]+)/i);
+    // ─── Broadcast Mutations ──────────────────────────────────
+    // If this was a mutating statement, notify the local UI and
+    // broadcast an UPSERT to other tabs via BroadcastChannel.
+    const tableMatch = sql.match(TABLE_RE);
     if (tableMatch) {
       const table = tableMatch[1];
+      const recordId = extractRecordId(sql, resolvedParams);
+      const broadcastHlc = stampedHlc || hlc.now();
+
       self.postMessage({ type: 'LOCAL_TAB_CHANGED', table });
-      
+
       channel.postMessage({
         type: 'REPLICATE_ADAPT',
-        sql,
-        params,
-        hlc: hlc.now(),
+        sql: toUpsert(sql),
+        params: resolvedParams,
+        hlc: broadcastHlc,
         table,
-        nodeId: instanceId
+        nodeId: instanceId,
+        recordId,
       });
     }
   } catch (error) {
