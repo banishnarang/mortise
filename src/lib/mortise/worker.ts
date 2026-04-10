@@ -10,6 +10,30 @@ const db = new PGlite('idb://mortise-' + instanceId);
 
 const channel = new BroadcastChannel('mortise_sync');
 
+// ─── Sync Status Tracking ───────────────────────────────────────────
+// Keep a rolling log of the last 5 REPLICATE_ADAPT events received
+// from other tabs so we can surface them in a debug dashboard.
+
+interface SyncLogEntry {
+  nodeId: string;
+  table: string;
+  hlc: string;
+  operation: string;
+  receivedAt: number;
+}
+
+const MAX_SYNC_LOG = 5;
+const syncLog: SyncLogEntry[] = [];
+
+function pushSyncLog(entry: SyncLogEntry) {
+  syncLog.push(entry);
+  if (syncLog.length > MAX_SYNC_LOG) {
+    syncLog.shift();
+  }
+}
+
+// ─── BroadcastChannel Listener ──────────────────────────────────────
+
 channel.onmessage = async (event) => {
   if (!event.data) return;
   const { type, sql, params, hlc: remoteHlc, table, nodeId } = event.data;
@@ -20,6 +44,18 @@ channel.onmessage = async (event) => {
     if (remoteHlc) {
       hlc.receive(remoteHlc);
     }
+
+    // Detect operation type from the replicated SQL
+    const opMatch = sql?.match(/^\s*(INSERT|UPDATE|DELETE)/i);
+    const operation = opMatch ? opMatch[1].toUpperCase() : 'UNKNOWN';
+
+    pushSyncLog({
+      nodeId,
+      table: table || 'unknown',
+      hlc: remoteHlc || '',
+      operation,
+      receivedAt: Date.now(),
+    });
 
     try {
       if (sql) {
@@ -32,8 +68,23 @@ channel.onmessage = async (event) => {
   }
 };
 
+// ─── Main Thread Message Handler ────────────────────────────────────
+
 self.onmessage = async (event: MessageEvent) => {
-  const { id, sql, params } = event.data;
+  const { id, type, sql, params } = event.data;
+
+  // Handle sync status requests from the main thread
+  if (type === 'GET_SYNC_STATUS') {
+    self.postMessage({
+      type: 'SYNC_STATUS',
+      payload: {
+        nodeId: instanceId,
+        currentHlc: hlc.now(),
+        recentSyncEvents: [...syncLog],
+      },
+    });
+    return;
+  }
 
   try {
     // Execute the SQL
