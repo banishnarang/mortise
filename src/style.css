@@ -1,36 +1,47 @@
-:root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
+@import "tailwindcss";
 
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
+@theme {
+  --font-mono: "JetBrains Mono", "Fira Code", "SF Mono", ui-monospace, monospace;
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
 
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  --color-zinc-950: #09090b;
+  --color-zinc-900: #18181b;
+  --color-zinc-800: #27272a;
+  --color-zinc-700: #3f3f46;
+  --color-zinc-600: #52525b;
+  --color-zinc-500: #71717a;
+  --color-zinc-400: #a1a1aa;
+  --color-zinc-300: #d4d4d8;
+  --color-zinc-200: #e4e4e7;
+  --color-zinc-100: #f4f4f5;
+
+  --color-emerald-500: #10b981;
+  --color-emerald-400: #34d399;
+
+  --color-indigo-500: #6366f1;
+  --color-indigo-400: #818cf8;
+
+  --color-amber-500: #f59e0b;
+  --color-amber-400: #fbbf24;
+
+  --color-rose-500: #f43f5e;
+  --color-rose-400: #fb7185;
 }
 
-body {
-  margin: 0;
-  display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
-}
+@layer base {
+  html {
+    color-scheme: dark;
+  }
 
-#app {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
-}
+  body {
+    @apply bg-zinc-950 text-zinc-100 font-sans antialiased;
+    margin: 0;
+    min-height: 100vh;
+  }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
+  #app {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 2rem;
   }
 }

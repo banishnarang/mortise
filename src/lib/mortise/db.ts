@@ -30,10 +30,49 @@ export function subscribe(sql: string, listener: Listener) {
   };
 }
 
+// ─── Sync Status Listener ───────────────────────────────────────────
+// Listeners that want to receive SYNC_STATUS payloads from the worker.
+
+export interface SyncLogEntry {
+  nodeId: string;
+  table: string;
+  hlc: string;
+  operation: string;
+  receivedAt: number;
+}
+
+export interface SyncStatus {
+  nodeId: string;
+  currentHlc: string;
+  recentSyncEvents: SyncLogEntry[];
+}
+
+type SyncStatusListener = (status: SyncStatus) => void;
+const syncStatusListeners = new Set<SyncStatusListener>();
+
+export function onSyncStatus(listener: SyncStatusListener): () => void {
+  syncStatusListeners.add(listener);
+  return () => { syncStatusListeners.delete(listener); };
+}
+
+/**
+ * Requests the current sync status from the worker.
+ * Results are delivered asynchronously via `onSyncStatus` listeners.
+ */
+export function requestSyncStatus(): void {
+  worker.postMessage({ type: 'GET_SYNC_STATUS' });
+}
+
 // Listen for messages from the Web Worker
 worker.onmessage = (event: MessageEvent) => {
-  const { type, table, id, results, error } = event.data;
+  const { type, table, id, results, error, payload } = event.data;
   
+  // Deliver sync status to subscribers
+  if (type === 'SYNC_STATUS' && payload) {
+    syncStatusListeners.forEach(fn => fn(payload as SyncStatus));
+    return;
+  }
+
   if (type === 'LOCAL_TAB_CHANGED' || type === 'REMOTE_TAB_CHANGED') {
     if (type === 'LOCAL_TAB_CHANGED') {
       // Logic specific to a local update could go here
