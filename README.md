@@ -35,13 +35,22 @@ Mortise uses a sequenced bootstrap process to ensure new nodes converge to the c
 3. **Verified Handshake:** Handshakes are HLC-aware; a node will only update its local records if the handshake data is strictly newer than its current state.
 4. **Loading Gate:** The UI waits for a `HANDSHAKE_COMPLETED` signal (with a 2s timeout) before allowing user interaction, preventing "flickers" of stale data.
 
+## ⚡ Performance: Delta Sync
+
+To minimize payload sizes in established databases, Mortise employs a **Delta Sync** optimization during the handshake:
+
+1. **High-Water Mark:** Before requesting a sync, the node finds its maximum local `last_modified_hlc`.
+2. **Targeted Fetch:** It sends this timestamp as `sinceHlc` in the `SYNC_REQUEST`.
+3. **Strict Delta:** The remote peer returns only the records modified strictly *after* that timestamp.
+4. **Efficiency:** Fresh tabs perform a "Full" sync, while existing tabs perform a fast "Delta" sync upon refresh or reconnection.
+
 ## 📊 Visual Monitoring: Sync Dashboard
 
 Mortise includes a built-in debug dashboard to monitor the distributed state in real-time:
 - **Node Identity:** View the unique 8-character ID of the current tab.
 - **Clock State:** Real-time HLC monitoring.
 - **Event Log:** A rolling history of replication events with status badges:
-  - `🤝 State synced`: A successful initial handshake from another tab.
+  - `🤝 Synced X rows (Delta/Full)`: Indicates an initial handshake or refresh sync with row counts.
   - `✓ Applied`: The mutation was newer and successfully merged.
   - `👻 DEL`: A tombstone was received and applied.
   - `✗ Stale`: The mutation was older and was rejected (LWW or Zombie Guard).
